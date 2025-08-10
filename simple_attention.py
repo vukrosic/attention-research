@@ -158,12 +158,13 @@ class Rotary(nn.Module):
         self.register_buffer('sin', theta.sin(), persistent=False)
 
     def forward(self, x_BTHD: torch.Tensor):
-        assert self.cos.size(0) >= x_BTHD.size(-3)
-        cos, sin = self.cos[None, :x_BTHD.size(-3), None, :], self.sin[None, :x_BTHD.size(-3), None, :]
+        seq_len = x_BTHD.size(2)  # B, H, T, D format
+        assert self.cos.size(0) >= seq_len
+        cos, sin = self.cos[None, None, :seq_len, :], self.sin[None, None, :seq_len, :]
         x1, x2 = x_BTHD.to(dtype=torch.float32).chunk(2, dim=-1)
         y1 = x1 * cos + x2 * sin
         y2 = x1 * (-sin) + x2 * cos
-        return torch.cat((y1, y2), 3).type_as(x_BTHD)
+        return torch.cat((y1, y2), -1).type_as(x_BTHD)
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, n_heads: int, max_seq_len: int, dropout: float = 0.1):
