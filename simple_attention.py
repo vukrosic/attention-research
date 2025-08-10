@@ -40,9 +40,9 @@ class ModelConfig:
     muon_lr: float = 0.01
 
     # Data parameters
-    max_seq_len: int = 3
+    max_seq_len: int = 4  # a b = result
     num_samples: int = 50000
-    vocab_size: int = 20001  # -10000 to 10000 = 20001 numbers
+    vocab_size: int = 202  # -100 to 100 (201 numbers) + EQUALS token
 
     # Evaluation
     eval_every: int = 400
@@ -108,34 +108,38 @@ class Muon(torch.optim.Optimizer):
                 p.add_(g.view_as(p), alpha=-group["lr"] * max(1, p.size(-2) / p.size(-1))**0.5)
 	
 def generate_arithmetic_data(config: ModelConfig):
-    """Generate arithmetic data: a, b, a+b sequences"""
+    """Generate arithmetic with clear structure"""
     print(f"🔢 Generating {config.num_samples} arithmetic samples")
     
-    # Map numbers -10000 to 10000 to token IDs 0 to 20000
+    # Special tokens
+    EQUALS = 201  # "=" token
+    
     def num_to_token(num):
-        return num + 10000
+        return num + 100
     
     def token_to_num(token):
-        return token - 10000
+        if token == EQUALS:
+            return None
+        return token - 100
     
     sequences = []
     for _ in range(config.num_samples):
-        a = random.randint(-10000, 10000)
-        b = random.randint(-10000, 10000)
+        a = random.randint(-100, 100)  # Start small
+        b = random.randint(-100, 100)
         result = a + b
         
         # Clamp result to valid range
-        result = max(-10000, min(10000, result))
+        result = max(-100, min(100, result))
         
-        # Convert to tokens
-        seq = [num_to_token(a), num_to_token(b), num_to_token(result)]
+        # Sequence: a b EQUALS result
+        seq = [num_to_token(a), num_to_token(b), EQUALS, num_to_token(result)]
         sequences.append(seq)
     
     print(f"✅ Generated {len(sequences)} arithmetic sequences")
-    return sequences, num_to_token, token_to_num
+    return sequences, num_to_token, token_to_num, EQUALS
 
 class ArithmeticDataset(Dataset):
-    def __init__(self, sequences: List[List[int]]):
+    def __init__(self, sequences):
         self.sequences = sequences
 
     def __len__(self):
@@ -143,8 +147,9 @@ class ArithmeticDataset(Dataset):
 
     def __getitem__(self, idx):
         seq = self.sequences[idx]
-        x = torch.tensor(seq[:2], dtype=torch.long)  # a, b
-        y = torch.tensor(seq[1:], dtype=torch.long)   # b, result
+        # Model sees: a b =, predicts: b = result
+        x = torch.tensor(seq[:-1], dtype=torch.long)
+        y = torch.tensor(seq[1:], dtype=torch.long)
         return x, y
 
 class Rotary(nn.Module):
@@ -456,7 +461,7 @@ if __name__ == "__main__":
     print(f"   Data: {config.num_samples:,} samples, seq_len {config.max_seq_len}")
 
     # Generate data
-    sequences, num_to_token, token_to_num = generate_arithmetic_data(config)
+    sequences, num_to_token, token_to_num, EQUALS = generate_arithmetic_data(config)
     dataset = ArithmeticDataset(sequences)
 
     # Train/val split
