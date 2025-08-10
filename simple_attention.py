@@ -28,33 +28,33 @@ def set_seed(seed: int = 42):
 @dataclass
 class ModelConfig:
     # Model architecture
-    d_model: int = 64
-    n_heads: int = 4
-    n_layers: int = 2
-    d_ff: int = 128
+    d_model: int = 512
+    n_heads: int = 8
+    n_layers: int = 8
+    d_ff: int = 2048
     batch_size: int = 32
-    max_steps: int = 1000
+    max_steps: int = 2000
 
     # Training parameters
-    gradient_accumulation_steps: int = 1
+    gradient_accumulation_steps: int = 2
     muon_lr: float = 0.01
 
     # Data parameters
     max_seq_len: int = 3
-    num_samples: int = 10000
+    num_samples: int = 50000
     vocab_size: int = 20001  # -10000 to 10000 = 20001 numbers
 
     # Evaluation
-    eval_every: int = 200
-    eval_steps: int = 50
+    eval_every: int = 400
+    eval_steps: int = 100
 
     # Regularization
-    weight_decay: float = 0.01
-    dropout: float = 0.0
+    weight_decay: float = 0.1
+    dropout: float = 0.1
     grad_clip: float = 1.0
 
     # Technical
-    use_amp: bool = False
+    use_amp: bool = True
 
     def __post_init__(self):
         self.d_k = self.d_model // self.n_heads
