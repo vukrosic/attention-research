@@ -487,3 +487,91 @@ if __name__ == "__main__":
     print(f"   Validation Loss: {final_metrics['val_loss']:.4f}")
     print(f"   Validation Accuracy: {final_metrics['val_accuracy']:.4f}")
     print(f"   Validation Perplexity: {final_metrics['val_perplexity']:.2f}")
+
+    # Test the model on specific examples
+    print(f"\n🧪 TESTING MODEL:")
+    model.eval()
+    device = next(model.parameters()).device
+    
+    test_cases = [
+        (5, 3),
+        (10, -7),
+        (-15, 25),
+        (0, 42),
+        (-8, -12),
+        (99, 1),
+        (50, 50),
+        (-100, 100)
+    ]
+    
+    correct = 0
+    for a, b in test_cases:
+        expected = a + b
+        expected = max(-100, min(100, expected))  # Clamp to valid range
+        
+        # Create input sequence: [a, b, =]
+        input_seq = torch.tensor([num_to_token(a), num_to_token(b), EQUALS], dtype=torch.long).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            logits = model(input_seq)
+            # Get prediction for the last position (after =)
+            predicted_token = logits[0, -1].argmax().item()
+            predicted_num = token_to_num(predicted_token)
+            
+        is_correct = predicted_num == expected
+        if is_correct:
+            correct += 1
+            
+        print(f"   {a:4d} + {b:4d} = {expected:4d} | Predicted: {predicted_num:4d} {'✓' if is_correct else '✗'}")
+    
+    print(f"   Test Accuracy: {correct}/{len(test_cases)} = {correct/len(test_cases)*100:.1f}%")
+
+    # Interactive mode
+    print(f"\n🎮 INTERACTIVE MODE:")
+    print("Enter two numbers to test addition (or 'quit' to exit)")
+    print("Example: 15 -7")
+    
+    while True:
+        try:
+            user_input = input("\n> ").strip()
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                break
+                
+            parts = user_input.split()
+            if len(parts) != 2:
+                print("Please enter exactly two numbers separated by space")
+                continue
+                
+            a, b = int(parts[0]), int(parts[1])
+            
+            # Clamp inputs to valid range
+            a = max(-100, min(100, a))
+            b = max(-100, min(100, b))
+            
+            expected = a + b
+            expected = max(-100, min(100, expected))
+            
+            # Create input sequence: [a, b, =]
+            input_seq = torch.tensor([num_to_token(a), num_to_token(b), EQUALS], dtype=torch.long).unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                logits = model(input_seq)
+                predicted_token = logits[0, -1].argmax().item()
+                predicted_num = token_to_num(predicted_token)
+                
+                # Also show top 3 predictions
+                top_tokens = logits[0, -1].topk(3)
+                top_predictions = [(token_to_num(t.item()), prob.item()) for t, prob in zip(top_tokens.indices, torch.softmax(top_tokens.values, dim=0))]
+            
+            is_correct = predicted_num == expected
+            print(f"   {a} + {b} = {expected} | Model: {predicted_num} {'✓' if is_correct else '✗'}")
+            print(f"   Top predictions: {top_predictions}")
+            
+        except ValueError:
+            print("Please enter valid integers")
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"Error: {e}")
+    
+    print("\n👋 Goodbye!")
