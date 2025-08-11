@@ -137,3 +137,92 @@ This simple example demonstrates attention fundamentals. Real applications use:
 - Transformer architectures for complex tasks
 
 The core principle remains the same: **learn to focus on relevant information through Query-Key-Value interactions**.
+
+---
+
+# 🧠 Advanced: LLM Training with Attention Analysis
+
+This repository also includes a comprehensive attention analysis framework for analyzing transformer language models (`llm.py`).
+
+## 🔬 Attention Analysis Framework
+
+The framework tests multiple hypotheses about how transformer attention patterns work:
+
+### 📊 Hypotheses Tested
+
+1. **Positional Decay**: Attention strength decays with token distance
+2. **Layer Evolution**: Early layers focus locally, later layers globally  
+3. **Attention Entropy**: Attention becomes more focused in middle layers
+4. **Induction Heads**: Some heads learn to copy/repeat patterns
+5. **Special Token Aggregation**: Punctuation acts as information sinks
+6. **Head Specialization**: Different heads learn different patterns
+
+### 🚀 Quick Start with LLM Analysis
+
+1. **Run Training with Analysis**:
+   ```bash
+   python llm.py
+   ```
+   This will train a transformer model and automatically run attention analysis.
+
+2. **Interactive Analysis Demo**:
+   ```bash
+   python attention_analysis_demo.py
+   ```
+   Test the analysis framework with a small model.
+
+3. **Generate HTML Report**:
+   ```bash
+   python generate_attention_report.py
+   ```
+   Creates a comprehensive HTML report of analysis results.
+
+### 📈 Analysis Features
+
+- **Attention Weight Extraction**: Capture attention matrices from all layers
+- **Positional Analysis**: How attention varies with token distance
+- **Entropy Analysis**: Measure attention focus/distribution
+- **Head Specialization**: Identify what different heads learn
+- **Induction Head Detection**: Find heads that copy patterns
+- **Visualization**: Attention heatmaps and pattern plots
+- **Comprehensive Reporting**: HTML reports with all results
+
+### 🔍 Example Analysis Output
+
+```
+🧠 ATTENTION ANALYSIS
+==================================================
+🔍 Testing Hypothesis 1: Positional Decay...
+🔍 Testing Hypothesis 3: Attention Entropy...
+🔍 Testing Hypothesis 4: Induction Heads...
+🔍 Testing Hypothesis 5: Special Token Attention...
+
+📊 ANALYSIS SUMMARY:
+🎯 Most Specialized Heads:
+  L2_H3: avg_distance=4.2341
+  L1_H0: entropy=1.8765
+  L0_H2: diagonal=0.3452
+
+🔬 Hypothesis Test Results:
+  Entropy by Layer:
+    Layer 0: 2.1234
+    Layer 1: 1.8765
+    Layer 2: 2.0123
+```
+
+### 📁 Output Files
+
+- `attention_analysis_results.pkl`: Complete analysis data
+- `attention_matrix_l0_h0.png`: Attention heatmap visualization
+- `entropy_analysis.png`: Entropy progression plot
+- `attention_analysis_report.html`: Comprehensive HTML report
+
+### 🛠️ Understanding the Results
+
+- **High Entropy**: Distributed, unfocused attention
+- **Low Entropy**: Focused, concentrated attention  
+- **Induction Score**: How well heads copy previous patterns
+- **Distance Decay**: How attention decreases with token distance
+- **Head Specialization**: Different roles for different attention heads
+
+This advanced analysis helps understand what your transformer model is learning and how attention patterns evolve during training!
