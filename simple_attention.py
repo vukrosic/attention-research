@@ -13,6 +13,9 @@ from typing import List, Optional
 import warnings
 import os
 import pickle
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import defaultdict
 warnings.filterwarnings('ignore')
 
 def set_seed(seed: int = 42):
@@ -183,7 +186,7 @@ class MultiHeadAttention(nn.Module):
         self.rotary = Rotary(self.d_k, max_seq_len)
         self.dropout = dropout
 
-    def forward(self, x):
+    def forward(self, x, return_attention=False):
         batch_size, seq_len = x.size(0), x.size(1)
 
         qkv = self.qkv(x).reshape(batch_size, seq_len, 3, self.n_heads, self.d_k)
@@ -193,11 +196,28 @@ class MultiHeadAttention(nn.Module):
         Q = self.rotary(Q)
         K = self.rotary(K)
 
-        attn_output = F.scaled_dot_product_attention(
-            Q, K, V, is_causal=True, dropout_p=self.dropout if self.training else 0.0
-        )
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
-        return self.w_o(attn_output)
+        if return_attention:
+            # Manual attention computation to get weights
+            scale = 1.0 / math.sqrt(self.d_k)
+            scores = torch.matmul(Q, K.transpose(-2, -1)) * scale
+            
+            # Apply causal mask
+            mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+            scores.masked_fill_(mask, float('-inf'))
+            
+            attn_weights = F.softmax(scores, dim=-1)
+            if self.training and self.dropout > 0:
+                attn_weights = F.dropout(attn_weights, p=self.dropout)
+            
+            attn_output = torch.matmul(attn_weights, V)
+            attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
+            return self.w_o(attn_output), attn_weights
+        else:
+            attn_output = F.scaled_dot_product_attention(
+                Q, K, V, is_causal=True, dropout_p=self.dropout if self.training else 0.0
+            )
+            attn_output = attn_output.transpose(1, 2).reshape(batch_size, seq_len, self.d_model)
+            return self.w_o(attn_output)
 
 class FeedForward(nn.Module):
     def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
@@ -218,12 +238,19 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.RMSNorm(d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
-        attn_out = self.attention(self.norm1(x))
-        x = x + self.dropout(attn_out)
-        ff_out = self.feed_forward(self.norm2(x))
-        x = x + self.dropout(ff_out)
-        return x
+    def forward(self, x, return_attention=False):
+        if return_attention:
+            attn_out, attn_weights = self.attention(self.norm1(x), return_attention=True)
+            x = x + self.dropout(attn_out)
+            ff_out = self.feed_forward(self.norm2(x))
+            x = x + self.dropout(ff_out)
+            return x, attn_weights
+        else:
+            attn_out = self.attention(self.norm1(x))
+            x = x + self.dropout(attn_out)
+            ff_out = self.feed_forward(self.norm2(x))
+            x = x + self.dropout(ff_out)
+            return x
 
 class MinimalLLM(nn.Module):
     def __init__(self, config: ModelConfig):
@@ -255,16 +282,24 @@ class MinimalLLM(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, x):
+    def forward(self, x, return_attention=False):
         x = self.token_embedding(x) * math.sqrt(self.config.d_model)
         x = self.position_dropout(x)
 
+        attention_weights = []
         for block in self.transformer_blocks:
-            x = block(x)
+            if return_attention:
+                x, attn_weights = block(x, return_attention=True)
+                attention_weights.append(attn_weights)
+            else:
+                x = block(x)
 
         x = self.norm(x)
         x = self.output_dropout(x)
         logits = self.lm_head(x)
+        
+        if return_attention:
+            return logits, attention_weights
         return logits
 
 def evaluate_model(model: nn.Module, val_loader: DataLoader, config: ModelConfig):
@@ -443,6 +478,205 @@ def train_model(config: ModelConfig, train_loader: DataLoader, val_loader: DataL
 
     return model, final_eval
 
+def get_attention_weights(model, input_seq):
+    """Extract attention weights from all layers"""
+    model.eval()
+    device = next(model.parameters()).device
+    input_seq = input_seq.to(device)
+    
+    with torch.no_grad():
+        _, attention_weights = model(input_seq, return_attention=True)
+    
+    return attention_weights
+
+def visualize_attention_patterns(model, test_cases, token_to_num, num_to_token, EQUALS):
+    """Visualize attention patterns for different arithmetic categories"""
+    
+    # Define test categories
+    patterns = {
+        'small': [(5, 3), (2, 7), (-4, 6)],
+        'large': [(85, 90), (-95, -88), (99, 98)],
+        'opposite': [(50, -50), (25, -25), (-30, 30)],
+        'with_zero': [(0, 5), (0, 0), (100, 0)],
+        'boundary': [(100, 100), (-100, -100), (99, 1)]
+    }
+    
+    device = next(model.parameters()).device
+    model.eval()
+    
+    fig, axes = plt.subplots(len(patterns), model.config.n_layers, figsize=(3*model.config.n_layers, 3*len(patterns)))
+    if model.config.n_layers == 1:
+        axes = axes.reshape(-1, 1)
+    
+    for cat_idx, (category, cases) in enumerate(patterns.items()):
+        print(f"\n📊 Analyzing {category} patterns...")
+        
+        # Average attention across cases in this category
+        avg_attention_per_layer = []
+        
+        for a, b in cases:
+            # Create input sequence: [a, b, =]
+            input_seq = torch.tensor([num_to_token(a), num_to_token(b), EQUALS], 
+                                   dtype=torch.long).unsqueeze(0).to(device)
+            
+            attention_weights = get_attention_weights(model, input_seq)
+            
+            if not avg_attention_per_layer:
+                avg_attention_per_layer = [torch.zeros_like(attn) for attn in attention_weights]
+            
+            for layer_idx, attn in enumerate(attention_weights):
+                avg_attention_per_layer[layer_idx] += attn
+        
+        # Average across cases
+        for layer_idx in range(len(avg_attention_per_layer)):
+            avg_attention_per_layer[layer_idx] /= len(cases)
+        
+        # Plot heatmaps for each layer
+        for layer_idx, avg_attn in enumerate(avg_attention_per_layer):
+            # Average across heads and batch
+            attn_matrix = avg_attn[0].mean(dim=0).cpu().numpy()  # [seq_len, seq_len]
+            
+            ax = axes[cat_idx, layer_idx]
+            sns.heatmap(attn_matrix, annot=True, fmt='.2f', cmap='Blues', 
+                       xticklabels=['a', 'b', '='], yticklabels=['a', 'b', '='], ax=ax)
+            ax.set_title(f'{category}\nLayer {layer_idx+1}')
+            
+            if layer_idx == 0:
+                ax.set_ylabel('Query Position')
+            if cat_idx == len(patterns) - 1:
+                ax.set_xlabel('Key Position')
+    
+    plt.tight_layout()
+    plt.savefig('attention_patterns.png', dpi=150, bbox_inches='tight')
+    plt.show()
+
+def analyze_attention_stats(model, data_loader, config):
+    """Compute attention statistics across the dataset"""
+    model.eval()
+    device = next(model.parameters()).device
+    
+    stats = {
+        'entropy_per_layer': [[] for _ in range(config.n_layers)],
+        'position_bias': [[] for _ in range(config.n_layers)],
+        'attention_to_equals': [[] for _ in range(config.n_layers)]
+    }
+    
+    print("📈 Computing attention statistics...")
+    
+    with torch.no_grad():
+        for batch_idx, (x, y) in enumerate(data_loader):
+            if batch_idx >= 50:  # Limit for speed
+                break
+                
+            x = x.to(device)
+            attention_weights = get_attention_weights(model, x)
+            
+            for layer_idx, attn in enumerate(attention_weights):
+                # attn shape: [batch, heads, seq_len, seq_len]
+                batch_size, n_heads, seq_len, _ = attn.shape
+                
+                for b in range(batch_size):
+                    for h in range(n_heads):
+                        # Focus on the last position (where we predict the result)
+                        last_pos_attn = attn[b, h, -1, :]  # Attention from last position
+                        
+                        # Compute entropy
+                        entropy = -torch.sum(last_pos_attn * torch.log(last_pos_attn + 1e-8))
+                        stats['entropy_per_layer'][layer_idx].append(entropy.item())
+                        
+                        # Position bias (how much attention goes to each position)
+                        stats['position_bias'][layer_idx].append(last_pos_attn.cpu().numpy())
+                        
+                        # Attention to equals token (position 2)
+                        stats['attention_to_equals'][layer_idx].append(last_pos_attn[2].item())
+    
+    # Compute averages
+    for layer_idx in range(config.n_layers):
+        avg_entropy = np.mean(stats['entropy_per_layer'][layer_idx])
+        avg_pos_bias = np.mean(stats['position_bias'][layer_idx], axis=0)
+        avg_equals_attn = np.mean(stats['attention_to_equals'][layer_idx])
+        
+        print(f"Layer {layer_idx+1}:")
+        print(f"  Average entropy: {avg_entropy:.3f}")
+        print(f"  Position bias: a={avg_pos_bias[0]:.3f}, b={avg_pos_bias[1]:.3f}, ={avg_pos_bias[2]:.3f}")
+        print(f"  Attention to '=': {avg_equals_attn:.3f}")
+    
+    return stats
+
+def analyze_head_specialization(model, config, num_to_token, token_to_num, EQUALS):
+    """Check if specific attention heads specialize in different patterns"""
+    model.eval()
+    device = next(model.parameters()).device
+    
+    # Test patterns
+    test_patterns = {
+        'same_numbers': [(5, 5), (10, 10), (-7, -7)],
+        'opposite_signs': [(5, -5), (10, -10), (25, -25)],
+        'with_zero': [(0, 5), (0, -3), (7, 0)],
+        'large_sums': [(50, 50), (75, 25), (60, 40)],
+        'small_sums': [(1, 2), (3, 4), (2, 1)]
+    }
+    
+    print("🔍 Analyzing head specialization...")
+    
+    head_responses = defaultdict(lambda: defaultdict(list))
+    
+    with torch.no_grad():
+        for pattern_name, cases in test_patterns.items():
+            for a, b in cases:
+                input_seq = torch.tensor([num_to_token(a), num_to_token(b), EQUALS], 
+                                       dtype=torch.long).unsqueeze(0).to(device)
+                
+                attention_weights = get_attention_weights(model, input_seq)
+                
+                for layer_idx, attn in enumerate(attention_weights):
+                    # attn shape: [1, heads, seq_len, seq_len]
+                    for head_idx in range(config.n_heads):
+                        # Get attention from result position to operands
+                        result_attn = attn[0, head_idx, -1, :]  # Last position attention
+                        
+                        # Store key metrics for this head
+                        head_responses[f'L{layer_idx+1}H{head_idx+1}'][pattern_name].append({
+                            'attn_to_a': result_attn[0].item(),
+                            'attn_to_b': result_attn[1].item(),
+                            'attn_to_equals': result_attn[2].item(),
+                            'max_attn_pos': result_attn.argmax().item()
+                        })
+    
+    # Analyze specialization
+    print("\n🎯 Head Specialization Analysis:")
+    for head_name, patterns in head_responses.items():
+        print(f"\n{head_name}:")
+        
+        for pattern_name, responses in patterns.items():
+            avg_attn_a = np.mean([r['attn_to_a'] for r in responses])
+            avg_attn_b = np.mean([r['attn_to_b'] for r in responses])
+            avg_attn_eq = np.mean([r['attn_to_equals'] for r in responses])
+            
+            print(f"  {pattern_name:15s}: a={avg_attn_a:.3f}, b={avg_attn_b:.3f}, ={avg_attn_eq:.3f}")
+    
+    return head_responses
+
+def track_attention_flow(model, input_seq, config):
+    """Track how attention patterns change across layers"""
+    model.eval()
+    device = next(model.parameters()).device
+    input_seq = input_seq.to(device)
+    
+    attention_weights = get_attention_weights(model, input_seq)
+    
+    print("🌊 Attention Flow Analysis:")
+    print("Tracking attention from result position across layers...")
+    
+    for layer_idx, attn in enumerate(attention_weights):
+        # Average across heads for simplicity
+        avg_attn = attn[0].mean(dim=0)  # [seq_len, seq_len]
+        result_attn = avg_attn[-1, :]  # Attention from result position
+        
+        print(f"Layer {layer_idx+1}: a={result_attn[0]:.3f}, b={result_attn[1]:.3f}, ={result_attn[2]:.3f}")
+    
+    return attention_weights
+
 if __name__ == "__main__":
     # Check system
     print(f"🔍 Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
@@ -575,3 +809,89 @@ if __name__ == "__main__":
             print(f"Error: {e}")
     
     print("\n👋 Goodbye!")
+    
+    # ========================================
+    # ATTENTION PATTERN ANALYSIS
+    # ========================================
+    print("\n" + "="*50)
+    print("🔍 ATTENTION PATTERN ANALYSIS")
+    print("="*50)
+    
+    # 1. Visualize attention patterns for different categories
+    print("\n1. Visualizing attention patterns...")
+    visualize_attention_patterns(model, test_cases, token_to_num, num_to_token, EQUALS)
+    
+    # 2. Compute attention statistics
+    print("\n2. Computing attention statistics...")
+    attention_stats = analyze_attention_stats(model, val_loader, config)
+    
+    # 3. Analyze head specialization
+    print("\n3. Analyzing head specialization...")
+    head_specialization = analyze_head_specialization(model, config, num_to_token, token_to_num, EQUALS)
+    
+    # 4. Track attention flow for a specific example
+    print("\n4. Tracking attention flow...")
+    example_input = torch.tensor([num_to_token(15), num_to_token(-7), EQUALS], dtype=torch.long).unsqueeze(0)
+    print(f"Example: 15 + (-7) = 8")
+    attention_flow = track_attention_flow(model, example_input, config)
+    
+    # 5. Additional analysis: Check if model attends differently to correct vs incorrect predictions
+    print("\n5. Analyzing attention for correct vs incorrect predictions...")
+    correct_cases = []
+    incorrect_cases = []
+    
+    for a, b in test_cases:
+        expected = max(-100, min(100, a + b))
+        input_seq = torch.tensor([num_to_token(a), num_to_token(b), EQUALS], dtype=torch.long).unsqueeze(0).to(device)
+        
+        with torch.no_grad():
+            logits = model(input_seq)
+            predicted_token = logits[0, -1].argmax().item()
+            predicted_num = token_to_num(predicted_token)
+            
+        if predicted_num == expected:
+            correct_cases.append((a, b, input_seq))
+        else:
+            incorrect_cases.append((a, b, input_seq))
+    
+    if correct_cases and incorrect_cases:
+        print(f"Analyzing {len(correct_cases)} correct vs {len(incorrect_cases)} incorrect cases...")
+        
+        # Average attention for correct cases
+        correct_attn_avg = None
+        for a, b, seq in correct_cases:
+            attn_weights = get_attention_weights(model, seq)
+            if correct_attn_avg is None:
+                correct_attn_avg = [torch.zeros_like(attn) for attn in attn_weights]
+            for i, attn in enumerate(attn_weights):
+                correct_attn_avg[i] += attn
+        
+        for i in range(len(correct_attn_avg)):
+            correct_attn_avg[i] /= len(correct_cases)
+        
+        # Average attention for incorrect cases
+        incorrect_attn_avg = None
+        for a, b, seq in incorrect_cases:
+            attn_weights = get_attention_weights(model, seq)
+            if incorrect_attn_avg is None:
+                incorrect_attn_avg = [torch.zeros_like(attn) for attn in attn_weights]
+            for i, attn in enumerate(attn_weights):
+                incorrect_attn_avg[i] += attn
+        
+        for i in range(len(incorrect_attn_avg)):
+            incorrect_attn_avg[i] /= len(incorrect_cases)
+        
+        # Compare attention patterns
+        print("\nAttention comparison (result position attending to [a, b, =]):")
+        for layer_idx in range(len(correct_attn_avg)):
+            correct_result_attn = correct_attn_avg[layer_idx][0].mean(dim=0)[-1, :].cpu().numpy()
+            incorrect_result_attn = incorrect_attn_avg[layer_idx][0].mean(dim=0)[-1, :].cpu().numpy()
+            
+            print(f"Layer {layer_idx+1}:")
+            print(f"  Correct:   a={correct_result_attn[0]:.3f}, b={correct_result_attn[1]:.3f}, ={correct_result_attn[2]:.3f}")
+            print(f"  Incorrect: a={incorrect_result_attn[0]:.3f}, b={incorrect_result_attn[1]:.3f}, ={incorrect_result_attn[2]:.3f}")
+            print(f"  Difference: a={correct_result_attn[0]-incorrect_result_attn[0]:+.3f}, b={correct_result_attn[1]-incorrect_result_attn[1]:+.3f}, ={correct_result_attn[2]-incorrect_result_attn[2]:+.3f}")
+    
+    print("\n" + "="*50)
+    print("✅ ATTENTION ANALYSIS COMPLETE")
+    print("="*50)
